@@ -1,129 +1,57 @@
-use std::ops::{Add, Mul, Neg, Sub};
-use std::sync::Arc;
+use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use rand::Rng;
-use rand::seq::SliceRandom;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Domain {
-    n: usize,
-    q: u64,
-}
-
-impl Domain {
-    pub fn new(n: usize, q: u64) -> Self {
-        assert!(n.is_power_of_two(), "n must be a power of two");
-        assert!(q % 2 == 1, "use odd q");
-        Self { n, q }
-    }
-
-    #[inline]
-    pub fn n(&self) -> usize {
-        self.n
-    }
-
-    #[inline]
-    pub fn q(&self) -> u64 {
-        self.q
-    }
-
-    #[inline]
-    fn arc(&self) -> Arc<Domain> {
-        Arc::new(self.clone())
-    }
-
-    /// Ternary in {-1, 0, 1} per coefficient.
-    pub fn sample_ternary<R: Rng>(&self, rng: &mut R) -> Poly {
-        let mut v = vec![0i64; self.n];
-        for c in &mut v {
-            *c = (rng.random_range(0..3) as i64) - 1;
-        }
-        Poly::from_coeffs(self.arc(), v)
-    }
-
-    /// Uniform in [0, q) per coefficient.
-    pub fn sample_uniform_mod_q<R: Rng>(&self, rng: &mut R) -> Poly {
-        let mut v = vec![0i64; self.n];
-        for c in &mut v {
-            *c = rng.random_range(0..self.q) as i64;
-        }
-        Poly::from_coeffs(self.arc(), v)
-    }
-
-    /// Binary in {0,1} per coefficient.
-    pub fn sample_binary01<R: Rng>(&self, rng: &mut R) -> Poly {
-        let mut v = vec![0i64; self.n];
-        for c in &mut v {
-            *c = rng.random_range(0..2) as i64;
-        }
-        Poly::from_coeffs(self.arc(), v)
-    }
-
-    /// Rademacher in {-1,1} per coefficient.
-    pub fn sample_rademacher<R: Rng>(&self, rng: &mut R) -> Poly {
-        let mut v = vec![0i64; self.n];
-        for c in &mut v {
-            let bit: i64 = rng.random_range(0..2) as i64;
-            *c = 2 * bit - 1; // 0->-1, 1->+1
-        }
-        Poly::from_coeffs(self.arc(), v)
-    }
-
-    /// Sparse ternary with exactly h non-zeros set to +/-1.
-    pub fn sample_sparse_ternary<R: Rng>(&self, h: usize, rng: &mut R) -> Poly {
-        assert!(h <= self.n, "h must be <= n");
-        let mut v = vec![0i64; self.n];
-        // choose h distinct indices uniformly
-        let mut idx: Vec<usize> = (0..self.n).collect();
-        idx.shuffle(rng);
-        for &i in idx.iter().take(h) {
-            let sign: i64 = if rng.random_range(0..2) == 0 { -1 } else { 1 };
-            v[i] = sign;
-        }
-        Poly::from_coeffs(self.arc(), v)
-    }
-
-    /// Centered binomial distribution CBD(k): sum_k Ber(1/2) - sum_k Ber(1/2).
-    pub fn sample_cbd<R: Rng>(&self, k: usize, rng: &mut R) -> Poly {
-        let mut v = vec![0i64; self.n];
-        for c in &mut v {
-            let mut left = k;
-            let mut a_sum: u32 = 0;
-            let mut b_sum: u32 = 0;
-            while left > 0 {
-                let take = left.min(64);
-                let mask: u64 = if take == 64 { !0 } else { (1u64 << take) - 1 };
-                let a = rng.random::<u64>() & mask;
-                let b = rng.random::<u64>() & mask;
-                a_sum += a.count_ones();
-                b_sum += b.count_ones();
-                left -= take;
-            }
-            *c = (a_sum as i64) - (b_sum as i64);
-        }
-        Poly::from_coeffs(self.arc(), v)
-    }
-}
+pub mod domain;
+pub use domain::{Domain, DomainRef};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Poly {
-    pub coeffs: Vec<i64>,
-    ctx: Arc<Domain>,
+    coeffs: Vec<i64>,
+    domain: DomainRef,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum PolyError {
+    LengthMismatch { expected: usize, actual: usize },
+}
+
+impl std::fmt::Display for PolyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PolyError::LengthMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "coefficient length {actual} does not match n = {expected}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolyError {}
+
 impl Poly {
-    pub fn zero(ctx: &Arc<Domain>) -> Self {
+    pub fn zero(domain: &DomainRef) -> Self {
         Self {
-            coeffs: vec![0; ctx.n()],
-            ctx: Arc::clone(ctx),
+            coeffs: vec![0; domain.n()],
+            domain: domain.clone(),
         }
     }
 
-    pub fn from_coeffs(ctx: Arc<Domain>, coeffs: Vec<i64>) -> Self {
-        assert_eq!(coeffs.len(), ctx.n());
-        let mut p = Self { coeffs, ctx };
-        p.reduce_mod_q_inplace();
-        p
+    pub fn from_coeffs(domain: &DomainRef, mut coeffs: Vec<i64>) -> Result<Self, PolyError> {
+        if coeffs.len() != domain.n() {
+            return Err(PolyError::LengthMismatch {
+                expected: domain.n(),
+                actual: coeffs.len(),
+            });
+        }
+        let q = domain.q() as i64;
+        for c in &mut coeffs {
+            *c = c.rem_euclid(q);
+        }
+        Ok(Self {
+            coeffs,
+            domain: domain.clone(),
+        })
     }
 
     #[inline]
@@ -133,184 +61,70 @@ impl Poly {
 
     #[inline]
     pub fn n(&self) -> usize {
-        self.ctx.n()
+        self.domain.n()
     }
 
     #[inline]
     pub fn q(&self) -> u64 {
-        self.ctx.q()
+        self.domain.q()
     }
 
     #[inline]
-    pub fn domain(&self) -> &Arc<Domain> {
-        &self.ctx
+    pub fn domain(&self) -> &DomainRef {
+        &self.domain
     }
 
-    fn reduce_mod_q_inplace(&mut self) {
-        let q = self.q() as i64;
-        for c in &mut self.coeffs {
-            let mut v = *c % q;
-            if v < 0 {
-                v += q;
-            }
-            *c = v;
-        }
+    #[inline]
+    pub fn coeffs(&self) -> &[i64] {
+        &self.coeffs
     }
 
     /// Multiply by a small scalar modulo q.
     pub fn mul_scalar(&self, k: i64) -> Poly {
-        let q = self.q() as i64;
-        let mut out = Poly::zero(self.domain());
-        for i in 0..self.len() {
-            let prod = (self.coeffs[i] as i128) * (k as i128);
-            let mut v = (prod % (q as i128)) as i64;
-            if v < 0 {
-                v += q;
-            }
-            out.coeffs[i] = v;
+        let q = self.q() as i128;
+        let coeffs = self
+            .coeffs
+            .iter()
+            .map(|&c| ((c as i128 * k as i128).rem_euclid(q) as i64))
+            .collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
         }
-        out
     }
 
     /// Compute round((num/den) * self) coefficient-wise, then reduce into [0,q).
     pub fn scale_and_round(&self, num: i64, den: i64) -> Poly {
-        let mut out = Poly::zero(self.domain());
         let q = self.q() as i64;
         let num128 = num as i128;
         let den128 = den as i128;
-        for i in 0..self.len() {
-            let v = self.coeffs[i] as i128 * num128;
-            let r = ((v + den128 / 2) / den128) as i64;
-            let mut w = r % q;
-            if w < 0 {
-                w += q;
-            }
-            out.coeffs[i] = w;
+        let coeffs = self
+            .coeffs
+            .iter()
+            .map(|&c| {
+                let v = (c as i128) * num128;
+                let r = ((v + den128 / 2) / den128) as i64;
+                r.rem_euclid(q)
+            })
+            .collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
         }
-        out
     }
 
-    /// Reduce each coefficient modulo a small positive integer m.
-    pub fn mod_small(&self, m: i64) -> Poly {
-        debug_assert!(m > 0);
-        let mut out = Poly::zero(self.domain());
-        for i in 0..self.len() {
-            let mut w = self.coeffs[i] % m;
-            if w < 0 { w += m; }
-            out.coeffs[i] = w;
-        }
-        out
-    }
-}
-
-impl<'a, 'b> Add<&'b Poly> for &'a Poly {
-    type Output = Poly;
-    fn add(self, rhs: &'b Poly) -> Poly {
-        assert!(
-            self.n() == rhs.n() && self.q() == rhs.q(),
-            "domain mismatch"
-        );
+    /// Embed residues mod `t` back into Z_q (requires t <= q).
+    pub fn reduce_mod(&self, t: i64) -> Poly {
         let q = self.q() as i64;
-        let mut out = Poly::zero(self.domain());
-        for i in 0..self.len() {
-            let mut s = self.coeffs[i] + rhs.coeffs[i];
-            s %= q;
-            if s < 0 {
-                s += q;
-            }
-            out.coeffs[i] = s;
+        assert!(t > 0);
+        assert!(t <= q, "reduce requires t <= q");
+        let coeffs = self.coeffs.iter().map(|&c| c.rem_euclid(t)).collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
         }
-        out
     }
-}
 
-impl<'a, 'b> Sub<&'b Poly> for &'a Poly {
-    type Output = Poly;
-    fn sub(self, rhs: &'b Poly) -> Poly {
-        assert!(
-            self.n() == rhs.n() && self.q() == rhs.q(),
-            "domain mismatch"
-        );
-        let q = self.q() as i64;
-        let mut out = Poly::zero(self.domain());
-        for i in 0..self.len() {
-            let mut d = self.coeffs[i] - rhs.coeffs[i];
-            d %= q;
-            if d < 0 {
-                d += q;
-            }
-            out.coeffs[i] = d;
-        }
-        out
-    }
-}
-
-impl<'a> Neg for &'a Poly {
-    type Output = Poly;
-    fn neg(self) -> Poly {
-        let q = self.q() as i64;
-        let mut out = Poly::zero(self.domain());
-        for i in 0..self.len() {
-            let v = self.coeffs[i];
-            let mut n = (-v) % q;
-            if n < 0 {
-                n += q;
-            }
-            out.coeffs[i] = n;
-        }
-        out
-    }
-}
-
-impl<'a, 'b> Mul<&'b Poly> for &'a Poly {
-    type Output = Poly;
-    fn mul(self, rhs: &'b Poly) -> Poly {
-        assert!(
-            self.n() == rhs.n() && self.q() == rhs.q(),
-            "domain mismatch"
-        );
-        let n = self.n();
-        let q = self.q() as i128;
-        let mut acc = vec![0i128; n];
-        for i in 0..n {
-            for j in 0..n {
-                let k = i + j;
-                let term = (self.coeffs[i] as i128) * (rhs.coeffs[j] as i128);
-                if k < n {
-                    acc[k] += term;
-                } else {
-                    acc[k - n] -= term; // x^n == -1
-                }
-            }
-        }
-        let mut out = Poly::zero(self.domain());
-        for i in 0..n {
-            let mut v = acc[i] % q;
-            if v < 0 {
-                v += q;
-            }
-            out.coeffs[i] = v as i64;
-        }
-        out
-    }
-}
-
-// Scalar multiplication: &Poly * i64 and i64 * &Poly
-impl<'a> Mul<i64> for &'a Poly {
-    type Output = Poly;
-    fn mul(self, rhs: i64) -> Poly {
-        self.mul_scalar(rhs)
-    }
-}
-
-impl<'a> Mul<&'a Poly> for i64 {
-    type Output = Poly;
-    fn mul(self, rhs: &'a Poly) -> Poly {
-        rhs.mul_scalar(self)
-    }
-}
-
-impl Poly {
     /// Return coefficients in centered representation (-q/2, q/2].
     pub fn coeffs_centered(&self) -> Vec<i64> {
         let q = self.q() as i64;
@@ -323,4 +137,239 @@ impl Poly {
 
     // Note: we keep the internal invariant that coefficients are stored in [0,q),
     // so we expose centered values via `coeffs_centered` without changing storage.
+}
+
+#[inline]
+fn assert_same_domain(a: &Poly, b: &Poly) {
+    // pointer-equality fast path; fallback to (n, q)
+    let same_ptr = a.domain.ptr_eq(&b.domain);
+    if !(same_ptr || (a.n() == b.n() && a.q() == b.q())) {
+        panic!("domain mismatch");
+    }
+}
+
+impl<'a, 'b> Add<&'b Poly> for &'a Poly {
+    type Output = Poly;
+    fn add(self, rhs: &'b Poly) -> Poly {
+        assert_same_domain(self, rhs);
+        let q = self.q() as i64;
+        let coeffs = self
+            .coeffs
+            .iter()
+            .zip(rhs.coeffs.iter())
+            .map(|(&a, &b)| (a + b).rem_euclid(q))
+            .collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
+        }
+    }
+}
+
+impl<'a, 'b> Sub<&'b Poly> for &'a Poly {
+    type Output = Poly;
+    fn sub(self, rhs: &'b Poly) -> Poly {
+        assert_same_domain(self, rhs);
+        let q = self.q() as i64;
+        let coeffs = self
+            .coeffs
+            .iter()
+            .zip(rhs.coeffs.iter())
+            .map(|(&a, &b)| (a - b).rem_euclid(q))
+            .collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
+        }
+    }
+}
+
+impl<'a> Neg for &'a Poly {
+    type Output = Poly;
+    fn neg(self) -> Poly {
+        let q = self.q() as i64;
+        let coeffs = self.coeffs.iter().map(|&c| (-c).rem_euclid(q)).collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
+        }
+    }
+}
+
+impl Neg for Poly {
+    type Output = Poly;
+    fn neg(self) -> Poly {
+        -&self
+    }
+}
+
+impl<'a, 'b> Mul<&'b Poly> for &'a Poly {
+    type Output = Poly;
+    fn mul(self, rhs: &'b Poly) -> Poly {
+        assert_same_domain(self, rhs);
+        let n = self.n();
+        let q = self.q() as i128;
+        let mut acc = vec![0i128; n];
+        for (i, &a) in self.coeffs.iter().enumerate() {
+            for (j, &b) in rhs.coeffs.iter().enumerate() {
+                let k = i + j;
+                let term = (a as i128) * (b as i128);
+                if k < n {
+                    acc[k] += term;
+                } else {
+                    acc[k - n] -= term; // x^n == -1
+                }
+            }
+        }
+        let coeffs = acc.into_iter().map(|v| v.rem_euclid(q) as i64).collect();
+        Poly {
+            coeffs,
+            domain: self.domain.clone(),
+        }
+    }
+}
+
+impl<'a> Mul<i64> for &'a Poly {
+    type Output = Poly;
+    fn mul(self, rhs: i64) -> Poly {
+        self.mul_scalar(rhs)
+    }
+}
+
+impl Mul<i64> for Poly {
+    type Output = Poly;
+    fn mul(mut self, rhs: i64) -> Poly {
+        self *= rhs; // uses MulAssign<i64>
+        self
+    }
+}
+
+impl<'a> Mul<&'a Poly> for i64 {
+    type Output = Poly;
+    fn mul(self, rhs: &'a Poly) -> Poly {
+        rhs.mul_scalar(self)
+    }
+}
+impl Mul<Poly> for i64 {
+    type Output = Poly;
+    fn mul(self, rhs: Poly) -> Poly {
+        self * &rhs
+    }
+}
+
+impl Add<Poly> for Poly {
+    type Output = Poly;
+    fn add(mut self, rhs: Poly) -> Poly {
+        self += &rhs;
+        self
+    }
+}
+impl Add<&Poly> for Poly {
+    type Output = Poly;
+    fn add(mut self, rhs: &Poly) -> Poly {
+        self += rhs;
+        self
+    }
+}
+impl Add<Poly> for &Poly {
+    type Output = Poly;
+    fn add(self, rhs: Poly) -> Poly {
+        self + &rhs
+    }
+}
+
+// Sub
+impl Sub<Poly> for Poly {
+    type Output = Poly;
+    fn sub(mut self, rhs: Poly) -> Poly {
+        self -= &rhs;
+        self
+    }
+}
+impl Sub<&Poly> for Poly {
+    type Output = Poly;
+    fn sub(mut self, rhs: &Poly) -> Poly {
+        self -= rhs;
+        self
+    }
+}
+impl Sub<Poly> for &Poly {
+    type Output = Poly;
+    fn sub(self, rhs: Poly) -> Poly {
+        self - &rhs
+    }
+}
+
+// Mul
+impl Mul<Poly> for Poly {
+    type Output = Poly;
+    fn mul(mut self, rhs: Poly) -> Poly {
+        self *= &rhs;
+        self
+    }
+}
+impl Mul<&Poly> for Poly {
+    type Output = Poly;
+    fn mul(mut self, rhs: &Poly) -> Poly {
+        self *= rhs;
+        self
+    }
+}
+impl Mul<Poly> for &Poly {
+    type Output = Poly;
+    fn mul(self, rhs: Poly) -> Poly {
+        self * &rhs
+    }
+}
+
+impl AddAssign<&Poly> for Poly {
+    fn add_assign(&mut self, rhs: &Poly) {
+        assert_same_domain(self, rhs);
+        let q = self.q() as i64;
+        for (a, &b) in self.coeffs.iter_mut().zip(rhs.coeffs.iter()) {
+            *a = (*a + b).rem_euclid(q);
+        }
+    }
+}
+impl AddAssign<Poly> for Poly {
+    fn add_assign(&mut self, rhs: Poly) {
+        *self += &rhs;
+    }
+}
+
+impl SubAssign<&Poly> for Poly {
+    fn sub_assign(&mut self, rhs: &Poly) {
+        assert_same_domain(self, rhs);
+        let q = self.q() as i64;
+        for (a, &b) in self.coeffs.iter_mut().zip(rhs.coeffs.iter()) {
+            *a = (*a - b).rem_euclid(q);
+        }
+    }
+}
+impl SubAssign<Poly> for Poly {
+    fn sub_assign(&mut self, rhs: Poly) {
+        *self -= &rhs;
+    }
+}
+
+impl MulAssign<&Poly> for Poly {
+    fn mul_assign(&mut self, rhs: &Poly) {
+        // reuse your &Poly * &Poly impl
+        let r = (&*self) * rhs;
+        *self = r;
+    }
+}
+impl MulAssign<Poly> for Poly {
+    fn mul_assign(&mut self, rhs: Poly) {
+        *self *= &rhs;
+    }
+}
+
+impl MulAssign<i64> for Poly {
+    fn mul_assign(&mut self, rhs: i64) {
+        let q = self.q() as i128;
+        for c in &mut self.coeffs {
+            *c = (((*c as i128) * (rhs as i128)).rem_euclid(q)) as i64;
+        }
+    }
 }
