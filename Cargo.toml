@@ -1,0 +1,12 @@
+[package]
+name = "toy-bfv"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = { version = "0.9" }
+rayon = { version = "1.11", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+parallel=["rayon"]
