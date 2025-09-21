@@ -5,6 +5,7 @@ pub use domain::{Domain, DomainRef};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Poly {
+    /// We use i64 to simplify operations
     coeffs: Vec<i64>,
     domain: DomainRef,
 }
@@ -79,6 +80,75 @@ impl Poly {
         &self.coeffs
     }
 
+    /// Convert this polynomial into a new domain with the same degree n.
+    /// Fast path: if new.q() >= self.q(), this just swaps the domain handle.
+    /// Otherwise it reduces each coefficient modulo new.q().
+    pub fn into_domain(self, new: &DomainRef) -> Result<Poly, PolyError> {
+        if self.len() != new.n() {
+            return Err(PolyError::LengthMismatch {
+                expected: new.n(),
+                actual: self.len(),
+            });
+        }
+
+        // No-op if exactly the same ring instance.
+        if self.domain.ptr_eq(new) {
+            return Ok(self);
+        }
+
+        let old_q = self.q();
+        let new_q = new.q();
+        if old_q <= new_q {
+            // Fast rebind: all coeffs are already < old_q <= new_q.
+            Ok(Poly {
+                coeffs: self.coeffs,
+                domain: new.clone(),
+            })
+        } else {
+            // Need Euclidean reduction into [0, new_q).
+            let m = new_q as i64;
+            let mut coeffs = self.coeffs;
+            for c in &mut coeffs {
+                *c = c.rem_euclid(m);
+            }
+            Ok(Poly {
+                coeffs,
+                domain: new.clone(),
+            })
+        }
+    }
+
+    /// Like `into_domain`, but borrows `self` and clones the coefficients if needed.
+    pub fn to_domain(&self, new: &DomainRef) -> Result<Poly, PolyError> {
+        if self.len() != new.n() {
+            return Err(PolyError::LengthMismatch {
+                expected: new.n(),
+                actual: self.len(),
+            });
+        }
+
+        if self.domain.ptr_eq(new) {
+            return Ok(self.clone());
+        }
+
+        let old_q = self.q();
+        let new_q = new.q();
+        if old_q <= new_q {
+            // Fast rebind with a shallow coeff clone.
+            Ok(Poly {
+                coeffs: self.coeffs.clone(),
+                domain: new.clone(),
+            })
+        } else {
+            let m = new_q as i64;
+            let coeffs = self.coeffs.iter().map(|&c| c.rem_euclid(m)).collect();
+            Ok(Poly {
+                coeffs,
+                domain: new.clone(),
+            })
+        }
+    }
+
     /// Multiply by a small scalar modulo q.
     pub fn mul_scalar(&self, k: i64) -> Poly {
         let q = self.q() as i128;
@@ -87,38 +157,6 @@ impl Poly {
             .iter()
             .map(|&c| ((c as i128 * k as i128).rem_euclid(q) as i64))
             .collect();
-        Poly {
-            coeffs,
-            domain: self.domain.clone(),
-        }
-    }
-
-    /// Compute round((num/den) * self) coefficient-wise, then reduce into [0,q).
-    pub fn scale_and_round(&self, num: i64, den: i64) -> Poly {
-        let q = self.q() as i64;
-        let num128 = num as i128;
-        let den128 = den as i128;
-        let coeffs = self
-            .coeffs
-            .iter()
-            .map(|&c| {
-                let v = (c as i128) * num128;
-                let r = ((v + den128 / 2) / den128) as i64;
-                r.rem_euclid(q)
-            })
-            .collect();
-        Poly {
-            coeffs,
-            domain: self.domain.clone(),
-        }
-    }
-
-    /// Embed residues mod `t` back into Z_q (requires t <= q).
-    pub fn reduce_mod(&self, t: i64) -> Poly {
-        let q = self.q() as i64;
-        assert!(t > 0);
-        assert!(t <= q, "reduce requires t <= q");
-        let coeffs = self.coeffs.iter().map(|&c| c.rem_euclid(t)).collect();
         Poly {
             coeffs,
             domain: self.domain.clone(),

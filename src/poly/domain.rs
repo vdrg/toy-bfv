@@ -41,10 +41,11 @@ impl DomainRef {
         self.q
     }
 
+    /// Samples a polynomial with coefficients in {-1, 0, 1}.
     pub fn sample_ternary<R: Rng + ?Sized>(&self, rng: &mut R) -> Poly {
         let mut v = vec![0i64; self.n];
         for c in &mut v {
-            *c = rng.random_range(0..3) as i64 - 1;
+            *c = rng.random_range(0..3) - 1;
         }
         Poly::from_coeffs(self, v).unwrap()
     }
@@ -58,24 +59,41 @@ impl DomainRef {
         Poly::from_coeffs(self, v).unwrap()
     }
 
-    /// Centered binomial distribution CBD(k): sum_k Ber(1/2) - sum_k Ber(1/2).
-    pub fn sample_cbd<R: Rng + ?Sized>(&self, k: usize, rng: &mut R) -> Poly {
+    /// Samples from the Centered Binomial Distribution (CBD), which is an
+    /// efficient approximation of a discrete Gaussian.
+    /// The standard deviation determines the variance of the distribution.
+    // Q: is this enough for cryptographic applications?
+    pub fn sample_cbd<R: Rng + Sized>(&self, std_dev: f64, rng: &mut R) -> Poly {
+        // The parameter k for CBD is derived from the variance (std_dev^2).
+        // For CBD(k), the variance is k/2. So, k = 2 * variance.
+        let k = (2.0 * std_dev * std_dev).round() as usize;
         let mut v = vec![0i64; self.n];
+
         for c in &mut v {
-            let mut left = k;
             let mut a_sum: u32 = 0;
             let mut b_sum: u32 = 0;
-            while left > 0 {
-                let take = left.min(64);
-                let mask: u64 = if take == 64 { !0 } else { (1u64 << take) - 1 };
-                let a = rng.random::<u64>() & mask;
-                let b = rng.random::<u64>() & mask;
-                a_sum += a.count_ones();
-                b_sum += b.count_ones();
-                left -= take;
+            let mut remaining = k;
+
+            // Process in chunks of 64 bits for performance.
+            while remaining > 0 {
+                let chunk_size = remaining.min(64);
+                let mask = if chunk_size == 64 {
+                    !0
+                } else {
+                    (1u64 << chunk_size) - 1
+                };
+
+                let a_chunk = rng.random::<u64>() & mask;
+                let b_chunk = rng.random::<u64>() & mask;
+
+                a_sum += a_chunk.count_ones();
+                b_sum += b_chunk.count_ones();
+
+                remaining -= chunk_size;
             }
             *c = (a_sum as i64) - (b_sum as i64);
         }
+
         Poly::from_coeffs(self, v).expect("length matches domain")
     }
 }
