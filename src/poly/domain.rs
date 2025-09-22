@@ -41,12 +41,12 @@ impl DomainRef {
     /// Uniform sample in centered Z_q: (-⌊q/2⌋, ⌈q/2⌉]
     pub fn sample_uniform_centered<R: Rng + ?Sized>(&self, rng: &mut R) -> crate::poly::Poly {
         let q = self.q as i64;
+        let half = q / 2;
         let mut v = vec![0i64; self.n];
         for c in &mut v {
-            let u = rng.random_range(0..self.q) as i64; // [0, q)
-            *c = super::redc_centered_i64(u, q);
+            *c = rng.random_range(-half..half) as i64; // [0, q)
         }
-        crate::poly::Poly::from_coeffs(self, v).unwrap()
+        crate::poly::Poly::from_coeffs(v)
     }
 
     /// Ternary in {-1,0,1} (already centered).
@@ -55,7 +55,7 @@ impl DomainRef {
         for c in &mut v {
             *c = rng.random_range(0..3) - 1;
         }
-        crate::poly::Poly::from_coeffs(self, v).unwrap()
+        crate::poly::Poly::from_coeffs(v)
     }
 
     /// CBD noise; returns centered coefficients.
@@ -78,6 +78,6 @@ impl DomainRef {
             }
             *c = (a_sum as i64) - (b_sum as i64); // already centered
         }
-        crate::poly::Poly::from_coeffs(self, v).unwrap()
+        crate::poly::Poly::from_coeffs(v)
     }
 }

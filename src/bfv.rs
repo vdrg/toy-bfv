@@ -113,18 +113,21 @@ impl BFV {
         let s = self.params.rq.sample_ternary(rng);
         let e = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
         let a = self.params.rq.sample_uniform_centered(rng);
+
         // RLWE
         let b = -(&a * &s + &e);
+
         // Relinearization key (V2)
         let s2 = &s * &s;
         let p = self.params.relin_p;
-        let rlk_domain = DomainRef::new(self.n(), p * self.q());
-        // Q: what should be the distribution for the error?
+        let pq = p * self.q();
+
+        let rlk_domain = DomainRef::new(self.n(), pq);
         let rlk_e = rlk_domain.sample_cbd(self.params.relin_error_std_dev, rng);
         let rlk_a = rlk_domain.sample_uniform_centered(rng);
+
         // b = -(a*s + e) + p*s^2 (mod p*q)
-        let p_s2 = &s2.to_domain(&rlk_domain).unwrap() * (p as i64);
-        let rlk_b = -(&rlk_a * &s.to_domain(&rlk_domain).unwrap() + &rlk_e) + p_s2;
+        let rlk_b = (-(&rlk_a * &s + &rlk_e) + (p as i64) * &s2).reduce_mod(pq);
         Keys {
             secret: s,
             public: (b, a),
@@ -138,134 +141,44 @@ impl BFV {
         let e1 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
         let e2 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
         // Change m's domain to Rq
-        let m = m.to_domain(&self.params.rq).expect("n matches");
+        let m = m.reduce_mod(self.q());
         let c0 = &pk.0 * &u + e1 + m * delta;
         let c1 = &pk.1 * &u + e2;
         Ciphertext(c0, c1)
     }
 
     pub fn decrypt(&self, ct: &Ciphertext, sk: &SecretKey) -> Poly {
+        let t = self.t() as i64;
+        let q = self.q();
+
         // v = c0 + c1*s = m*Δ + noise (mod q)
         let v = &ct.0 + &ct.1 * sk;
-        // round(v * t / q)
-        let scaled_coeffs = self.scale_and_round_coeffs(&v);
-        // Embed into mod t
-        Poly::from_coeffs(&self.params.rt, scaled_coeffs).unwrap()
+
+        // round(v * t / q) mod q
+        (v * t).div_round(q).reduce_mod(t as u64)
     }
 
     pub fn add(&self, ct1: &Ciphertext, ct2: &Ciphertext) -> Ciphertext {
         Ciphertext(&ct1.0 + &ct2.0, &ct1.1 + &ct2.1)
     }
 
-    fn integer_ring_mul(a: &Poly, b: &Poly) -> Vec<i128> {
-        let n = a.n();
-        let mut acc = vec![0i128; n];
-        for (i, &a_c) in a.coeffs().iter().enumerate() {
-            for (j, &b_c) in b.coeffs().iter().enumerate() {
-                let k = i + j;
-                let term = (a_c as i128) * (b_c as i128);
-                if k < n {
-                    acc[k] += term;
-                } else {
-                    acc[k - n] -= term;
-                }
-            }
-        }
-        acc
-    }
-
-    fn integer_ring_add(a: &Vec<i128>, b: &Vec<i128>) -> Vec<i128> {
-        a.iter().zip(b.iter()).map(|(&x, &y)| x + y).collect()
-    }
-
     /// Ciphertext multiplication with component-wise scale-and-round by t/q
     /// followed by relinearization using the provided relin key.
     pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
-        let c0_raw = Self::integer_ring_mul(&ct1.0, &ct2.0);
-        let c1_raw1 = Self::integer_ring_mul(&ct1.0, &ct2.1);
-        let c1_raw2 = Self::integer_ring_mul(&ct1.1, &ct2.0);
-        let c1_raw = Self::integer_ring_add(&c1_raw1, &c1_raw2);
-        let c2_raw = Self::integer_ring_mul(&ct1.1, &ct2.1);
-        let mut c0_coeffs = self.scale_and_round_coeffs_raw(&c0_raw);
-        let mut c1_coeffs = self.scale_and_round_coeffs_raw(&c1_raw);
-        let c2_coeffs = self.scale_and_round_coeffs_raw(&c2_raw);
-        let p = self.params.relin_p as i128;
-        let r0c = rlk.0.coeffs();
-        let r1c = rlk.1.coeffs();
-        let term0_coeffs = self.poly_mul_and_scale_coeffs(&c2_coeffs, &r0c, p);
-        let term1_coeffs = self.poly_mul_and_scale_coeffs(&c2_coeffs, &r1c, p);
-        for i in 0..self.n() {
-            c0_coeffs[i] += term0_coeffs[i];
-            c1_coeffs[i] += term1_coeffs[i];
-        }
-        let c0 = Poly::from_coeffs(&self.params.rq, c0_coeffs).unwrap();
-        let c1 = Poly::from_coeffs(&self.params.rq, c1_coeffs).unwrap();
+        let t = self.t() as i64;
+        let q = self.q();
+        let p = self.params.relin_p;
+
+        let mut c0 = (&ct1.0 * &ct2.0 * t).div_round(q).reduce_mod(q);
+        let mut c1 = ((&ct1.0 * &ct2.1 + &ct1.1 * &ct2.0) * t)
+            .div_round(q)
+            .reduce_mod(q);
+        let c2 = (&ct1.1 * &ct2.1 * t).div_round(q).reduce_mod(q);
+
+        c0 += (&c2 * &rlk.0).div_round(p).reduce_mod(q);
+        c1 += (&c2 * &rlk.1).div_round(p).reduce_mod(q);
+
         Ciphertext(c0, c1)
-    }
-
-    fn poly_mul_and_scale_coeffs(
-        &self,
-        poly1_coeffs: &[i64],
-        poly2_coeffs: &[i64],
-        p: i128,
-    ) -> Vec<i64> {
-        let n = poly1_coeffs.len();
-        let mut acc = vec![0i128; n];
-        for (i, &a) in poly1_coeffs.iter().enumerate() {
-            for (j, &b) in poly2_coeffs.iter().enumerate() {
-                let k = i + j;
-                let term = (a as i128) * (b as i128);
-                if k < n {
-                    acc[k] += term;
-                } else {
-                    acc[k - n] -= term;
-                }
-            }
-        }
-        acc.into_iter()
-            .map(|v| Self::round_div(v, p) as i64)
-            .collect()
-    }
-
-    fn scale_and_round_coeffs_raw(&self, raw: &Vec<i128>) -> Vec<i64> {
-        let t = self.t() as i128;
-        let q = self.q() as i128;
-        raw.iter()
-            .map(|&v| Self::round_div(v * t, q) as i64)
-            .collect()
-    }
-
-    /// This computes round(p * t/q) coefficient-wise. Since coefficients are already centered,
-    /// we skip the manual centering step.
-    fn scale_and_round_coeffs(&self, poly: &Poly) -> Vec<i64> {
-        let t = self.t() as i128;
-        let q = self.q() as i128;
-        poly.coeffs()
-            .iter()
-            .map(|&c| {
-                let centered = c as i128;
-                Self::round_div(centered * t, q) as i64
-            })
-            .collect()
-    }
-
-    #[inline]
-    fn floor_div(a: i128, b: i128) -> i128 {
-        let d = a / b;
-        let r = a % b;
-        if r != 0 && ((a < 0) != (b < 0)) {
-            d - 1
-        } else {
-            d
-        }
-    }
-
-    #[inline]
-    fn round_div(v: i128, d: i128) -> i128 {
-        let quot = Self::floor_div(v, d);
-        let rem = v - quot * d; // rem in [0, d)
-        let half = (d + 1) / 2;
-        if rem >= half { quot + 1 } else { quot }
     }
 }
 
@@ -296,7 +209,7 @@ mod tests {
     #[test]
     fn test_bfv_zero_polynomial() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
-        let m_zero = Poly::zero(&bfv.params.rt);
+        let m_zero = Poly::zero(bfv.n());
         let ct = bfv.encrypt(&m_zero, &keys.public, &mut rng);
         let decrypted = bfv.decrypt(&ct, &keys.secret);
         assert_eq!(decrypted.coeffs(), m_zero.coeffs());
@@ -306,7 +219,7 @@ mod tests {
     fn test_bfv_constant_polynomial() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
         let n = bfv.n();
-        let m_const = Poly::from_coeffs(&bfv.params.rt, vec![5i64; n]).expect("len matches");
+        let m_const = Poly::from_coeffs(vec![5i64; n]);
         let ct = bfv.encrypt(&m_const, &keys.public, &mut rng);
         let decrypted = bfv.decrypt(&ct, &keys.secret);
         assert_eq!(decrypted.coeffs(), m_const.coeffs());
@@ -324,10 +237,11 @@ mod tests {
     #[test]
     fn test_bfv_single_coefficient() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
+        let t = bfv.t();
         let n = bfv.n();
         let mut coeffs = vec![0i64; n];
         coeffs[0] = 10;
-        let m_single = Poly::from_coeffs(&bfv.params.rt, coeffs).expect("len matches");
+        let m_single = Poly::from_coeffs(coeffs).reduce_mod(t);
         let ct = bfv.encrypt(&m_single, &keys.public, &mut rng);
         let decrypted = bfv.decrypt(&ct, &keys.secret);
         assert_eq!(decrypted.coeffs(), m_single.coeffs());
@@ -336,24 +250,26 @@ mod tests {
     #[test]
     fn test_bfv_add() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
+        let t = bfv.t();
         let m1 = bfv.params.rt.sample_uniform_centered(&mut rng);
         let m2 = bfv.params.rt.sample_uniform_centered(&mut rng);
         let ct1 = bfv.encrypt(&m1, &keys.public, &mut rng);
         let ct2 = bfv.encrypt(&m2, &keys.public, &mut rng);
         let added = bfv.add(&ct1, &ct2);
         let decrypted = bfv.decrypt(&added, &keys.secret);
-        assert_eq!(decrypted.coeffs(), (&m1 + &m2).coeffs());
+        assert_eq!(decrypted.coeffs(), (&m1 + &m2).reduce_mod(t).coeffs());
     }
 
     #[test]
     fn test_bfv_mul_basic() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
+        let t = bfv.t();
         let m1 = bfv.params.rt.sample_uniform_centered(&mut rng);
         let m2 = bfv.params.rt.sample_uniform_centered(&mut rng);
         let ct1 = bfv.encrypt(&m1, &keys.public, &mut rng);
         let ct2 = bfv.encrypt(&m2, &keys.public, &mut rng);
         let c_prod = bfv.mul(&ct1, &ct2, &keys.relin);
         let dec = bfv.decrypt(&c_prod, &keys.secret);
-        assert_eq!(dec.coeffs(), (&m1 * &m2).coeffs());
+        assert_eq!(dec.coeffs(), (&m1 * &m2).reduce_mod(t).coeffs());
     }
 }
