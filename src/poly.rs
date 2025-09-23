@@ -41,6 +41,15 @@ impl Poly {
         Self { q, coeffs }
     }
 
+    pub fn from_i128_coeffs(q: u64, coeffs: &[i128]) -> Self {
+        let modulus = q as i128;
+        let mapped = coeffs
+            .iter()
+            .map(|&v| ((v % modulus + modulus) % modulus) as u64)
+            .collect();
+        Self { q, coeffs: mapped }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.coeffs.len()
@@ -56,35 +65,54 @@ impl Poly {
         self.q
     }
 
-    /// Reduce coefficients modulo q.
-    /// Returns the Poly mod q.
-    // pub fn reduce_mod(&self, q: u64) -> Poly {
-    //     if self.q <= q {
-    //         return Poly {
-    //             q,
-    //             coeffs: self.coeffs.clone(),
-    //         };
-    //     }
-    //
-    //     println!("coeffs {:?}", &self.coeffs);
-    //     let coeffs = self.coeffs.iter().map(|&c| c % q).collect();
-    //     Poly { q, coeffs }
-    // }
+    pub fn reduce_mod(&self, new_q: u64) -> Poly {
+        assert!(new_q != 0);
+        let coeffs = self.coeffs.iter().map(|&c| c % new_q).collect();
+        Poly { q: new_q, coeffs }
+    }
 
-    pub fn reduce_mod(&self, q: u64) -> Poly {
-        assert!(q != 0, "new_q cannot be zero");
-        let m = q;
-        let half = self.q / 2;
-        let q_mod_m = self.q % m;
+    pub fn reduce_mod_centered(&self, new_q: u64) -> Poly {
+        assert!(new_q != 0, "new_q cannot be zero");
+
+        let old_q = self.q as i128;
+        let new_q_i128 = new_q as i128;
+        let half_old = (old_q - 1) / 2;
+
         let coeffs = self
             .coeffs
             .iter()
             .map(|&c| {
-                let r = c % m;
-                if c <= half { r } else { (r + m - q_mod_m) % m }
+                let mut x = c as i128;
+                if x > half_old {
+                    x -= old_q;
+                }
+                let mut r = x % new_q_i128;
+                if r < 0 {
+                    r += new_q_i128;
+                }
+                r as u64
             })
             .collect();
-        Poly { q: m, coeffs }
+
+        Poly { q: new_q, coeffs }
+    }
+
+    /// Non-centered: r_i = round(v_i * num / den) with v_i in [0, q)
+    pub fn scale_round_pos(&self, num: u64, den: u64) -> Poly {
+        assert!(den != 0);
+        let q = self.q as u128;
+        let num128 = num as u128;
+        let den128 = den as u128;
+        let coeffs = self
+            .coeffs
+            .iter()
+            .map(|&v| {
+                let v128 = v as u128;
+                let r = (v128 * num128 + den128 / 2) / den128;
+                (r % q) as u64
+            })
+            .collect();
+        Poly { q: self.q, coeffs }
     }
 
     /// Per-coeff: r = round(v * num / den), with v in [0, q).
@@ -103,10 +131,6 @@ impl Poly {
         fn round_mul_div_u128(abs_x: u64, num128: u128, den128: u128) -> u64 {
             let prod = (abs_x as u128) * num128;
             let rounded = (prod + den128 / 2) / den128; // nearest, ties up
-            // println!(
-            //     "abs_x {:?} prod {:?} rounded {:?} den {:?}",
-            //     abs_x, prod, rounded, den128
-            // );
             rounded as u64
         }
 
@@ -132,7 +156,79 @@ impl Poly {
     }
 
     pub fn div_round(&self, den: u64) -> Poly {
-        self.scale_round(1, den)
+        assert!(den != 0, "division by zero");
+
+        let den_i128 = den as i128;
+        let q_i128 = self.q as i128;
+        let half = (q_i128 - 1) / 2;
+
+        let coeffs = self
+            .coeffs
+            .iter()
+            .map(|&c| {
+                let mut x = c as i128;
+                if x > half {
+                    x -= q_i128;
+                }
+                let rounded = if x >= 0 {
+                    (x + den_i128 / 2) / den_i128
+                } else {
+                    (x - den_i128 / 2) / den_i128
+                };
+                (((rounded % q_i128) + q_i128) % q_i128) as u64
+            })
+            .collect();
+
+        Poly { q: self.q, coeffs }
+    }
+
+    pub fn coeffs_centered_i128(&self) -> Vec<i128> {
+        let q = self.q as i128;
+        let half = q / 2;
+        self.coeffs
+            .iter()
+            .map(|&c| {
+                let v = c as i128;
+                if v <= half { v } else { v - q }
+            })
+            .collect()
+    }
+
+    pub fn negacyclic_convolve_centered(&self, rhs: &Poly) -> Vec<i128> {
+        assert_same_domain(self, rhs);
+        let n = self.len();
+        let a = self.coeffs_centered_i128();
+        let b = rhs.coeffs_centered_i128();
+        let mut acc = vec![0i128; n];
+        for (i, &ai) in a.iter().enumerate() {
+            for (j, &bj) in b.iter().enumerate() {
+                let k = i + j;
+                let term = ai * bj;
+                if k < n {
+                    acc[k] += term;
+                } else {
+                    acc[k - n] -= term;
+                }
+            }
+        }
+        acc
+    }
+
+    pub fn scale_round_raw(values: &[i128], num: u64, den: u64) -> Vec<i128> {
+        assert!(den != 0, "division by zero");
+        let num_i128 = num as i128;
+        let den_i128 = den as i128;
+        values
+            .iter()
+            .map(|&v| {
+                let scaled = v * num_i128;
+                if scaled >= 0 {
+                    (scaled + den_i128 / 2) / den_i128
+                } else {
+                    (scaled - den_i128 / 2) / den_i128
+                }
+            })
+            .collect()
     }
 
     /// Multiply by a scalar.

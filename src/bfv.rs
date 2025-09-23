@@ -117,27 +117,18 @@ impl BFV {
         // RLWE
         let b = -(&a * &s + &e);
 
-        println!("after b");
         // Relinearization key (V2)
         let p = self.params.relin_p;
         let pq = p * self.q();
-        // let s = s.reduce_mod(pq);
-        // let s2 = &s * &s;
-        println!("after s");
 
         let rlk_domain = Domain::new(self.n(), pq);
         let rlk_e = rlk_domain.sample_cbd(self.params.relin_error_std_dev, rng);
-        println!("rlk_e coeffs: {:?}", rlk_e.coeffs());
         let rlk_a = rlk_domain.sample_uniform(rng);
-        println!("rlk_a coeffs: {:?}", rlk_a.coeffs());
 
-        let s2 = (&s * &s).reduce_mod(pq);
-        println!("s2 coeffs: {:?}", s2.coeffs());
-        let spq = s.reduce_mod(pq);
-        println!("spq coeffs: {:?}", spq.coeffs());
+        let s2 = (&s * &s).reduce_mod_centered(pq);
+        let spq = s.reduce_mod_centered(pq);
         // b = -(a*s + e) + p*s^2 (mod p*q)
         let rlk_b = (-(&rlk_a * &spq + &rlk_e) + p * &s2).reduce_mod(pq);
-        println!("rlk_b coeffs: {:?}", rlk_b.coeffs());
 
         Keys {
             secret: s,
@@ -150,44 +141,24 @@ impl BFV {
         let q = self.q();
         let delta = self.delta;
         let u = self.params.rq.sample_ternary(rng);
-        println!("u coeffs: {:?}", u.coeffs());
         let e1 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
-        println!("e1 coeffs: {:?}", e1.coeffs());
         let e2 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
-        println!("e2 coeffs: {:?}", e2.coeffs());
 
         // Change m's domain to Rq
-        let m = m.reduce_mod(q);
-        println!("m lifted coeffs: {:?}", m.coeffs());
+        let m = m.reduce_mod_centered(q);
         let c0 = &pk.0 * &u + e1 + &m * delta;
-        println!("m lifted coeffs: {:?}", m.coeffs());
         let c1 = &pk.1 * &u + e2;
-        println!("ct1 coeffs: {:?}", c1.coeffs());
         Ciphertext(c0, c1)
     }
 
     pub fn decrypt(&self, ct: &Ciphertext, sk: &SecretKey) -> Poly {
-        let t = self.t();
-        let q = self.q();
-
-        println!(
-            "before mult in decrypt {:?} {:?} {:?}",
-            &ct.0.q(),
-            &ct.1.q(),
-            &sk.q()
-        );
-        // v = c0 + c1*s = m*Δ + noise (mod q)
         let v = &ct.0 + &ct.1 * sk;
+        v.scale_round(self.t(), self.q())
+            .reduce_mod_centered(self.t())
+    }
 
-        println!("v {:?}", &v);
-
-        println!(
-            "scale(v, t, q).mod(t) {:?}",
-            &v.scale_round(t, q).reduce_mod(t)
-        );
-
-        // round(v * t / q) mod q
-        v.scale_round(t, q).reduce_mod(t)
+    pub fn bootstrap(&self, ct: &Ciphertext) -> Ciphertext {
+        todo!("not implemented");
     }
 
     pub fn add(&self, ct1: &Ciphertext, ct2: &Ciphertext) -> Ciphertext {
@@ -197,43 +168,40 @@ impl BFV {
     /// Ciphertext multiplication with component-wise scale-and-round by t/q
     /// followed by relinearization using the provided relin key.
     pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
-        let t = self.t();
         let q = self.q();
+        let t = self.t();
         let p = self.params.relin_p;
+        let pq = p.checked_mul(q).expect("p*q overflow");
 
-        let mut c0 = (&ct1.0 * &ct2.0).scale_round(t, q).reduce_mod(q);
-        println!("initial c0 coeffs: {:?}", c0.coeffs());
-        let mut c1 = (&ct1.0 * &ct2.1 + &ct1.1 * &ct2.0)
-            .scale_round(t, q)
-            .reduce_mod(q);
-        println!("initial c1 coeffs: {:?}", c1.coeffs());
+        let c0_raw = ct1.0.negacyclic_convolve_centered(&ct2.0);
+        let mut c1_raw = ct1.0.negacyclic_convolve_centered(&ct2.1);
+        let c1_cross = ct1.1.negacyclic_convolve_centered(&ct2.0);
+        for (dst, src) in c1_raw.iter_mut().zip(c1_cross.iter()) {
+            *dst += *src;
+        }
+        let c2_raw = ct1.1.negacyclic_convolve_centered(&ct2.1);
 
-        let c2 = (&ct1.1 * &ct2.1).scale_round(t, q).reduce_mod(p * q);
+        let mut c0_scaled = Poly::scale_round_raw(&c0_raw, t, q);
+        let mut c1_scaled = Poly::scale_round_raw(&c1_raw, t, q);
+        let c2_scaled = Poly::scale_round_raw(&c2_raw, t, q);
 
-        println!(
-            "c2 {:?} rlk.0 {:?} prod {:?}",
-            c2.coeffs(),
-            rlk.0.coeffs(),
-            (&c2 * &rlk.0).coeffs()
-        );
-        let relin_term0 = (&c2 * &rlk.0).div_round(p);
-        println!(
-            "relin_term0 (after div_round) coeffs: {:?}",
-            relin_term0.coeffs()
-        );
-        let reduced_term0 = relin_term0.reduce_mod(q);
-        println!("reduced_term0 coeffs: {:?}", reduced_term0.coeffs());
-        c0 += (&c2 * &rlk.0).div_round(p).reduce_mod(q);
-        let relin_term1 = (&c2 * &rlk.1).div_round(p);
-        println!(
-            "relin_term1 (after div_round) coeffs: {:?}",
-            relin_term1.coeffs()
-        );
-        let reduced_term1 = relin_term1.reduce_mod(q);
-        println!("reduced_term1 coeffs: {:?}", reduced_term1.coeffs());
-        c1 += (&c2 * &rlk.1).div_round(p).reduce_mod(q);
+        let c2_q = Poly::from_i128_coeffs(q, &c2_scaled);
+        let c2 = c2_q.reduce_mod_centered(pq);
 
-        println!("c0 {:?} c1 {:?}", &c0.coeffs(), &c1.coeffs());
+        let r0 = (&c2 * &rlk.0).div_round(p).reduce_mod(q);
+        let r1 = (&c2 * &rlk.1).div_round(p).reduce_mod(q);
+
+        let r0_center = r0.coeffs_centered_i128();
+        let r1_center = r1.coeffs_centered_i128();
+        for (dst, val) in c0_scaled.iter_mut().zip(r0_center.iter()) {
+            *dst += *val;
+        }
+        for (dst, val) in c1_scaled.iter_mut().zip(r1_center.iter()) {
+            *dst += *val;
+        }
+
+        let c0 = Poly::from_i128_coeffs(q, &c0_scaled);
+        let c1 = Poly::from_i128_coeffs(q, &c1_scaled);
 
         Ciphertext(c0, c1)
     }
@@ -248,9 +216,9 @@ mod tests {
 
     fn testing_params() -> BfvParameters {
         // q must be < p. Let's use a large p for testing.
-        let q: u64 = 12289;
-        // TODO: is this reasonable?
-        let p: u64 = (1u64 << 30) + 1;
+        let q: u64 = 1_073_741_825; // 2^30 + 1
+        let p: u64 = 2_147_483_647; // 2^31 - 1; pq ≈ 2.3e18 < 2^64
+
         BfvParameters::new(8, q, 17, p, 0.0, 0.0)
         // BfvParameters::default()
     }
@@ -260,7 +228,6 @@ mod tests {
         let bfv = BFV::new(params);
         let mut rng = StdRng::seed_from_u64(0);
         let keys = bfv.keygen(&mut rng);
-        println!("after keygen");
         (bfv, keys, rng)
     }
 
@@ -336,15 +303,26 @@ mod tests {
     fn test_bfv_mul_basic() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
         let m1 = bfv.params.rt.sample_uniform(&mut rng);
-        println!("m1 coeffs: {:?}", m1.coeffs());
         let m2 = bfv.params.rt.sample_uniform(&mut rng);
-        println!("m2 coeffs: {:?}", m2.coeffs());
         let ct1 = bfv.encrypt(&m1, &keys.public, &mut rng);
         let ct2 = bfv.encrypt(&m2, &keys.public, &mut rng);
         let c_prod = bfv.mul(&ct1, &ct2, &keys.relin);
-        println!("cprod[0] {:?}", &c_prod.0.coeffs());
         let dec = bfv.decrypt(&c_prod, &keys.secret);
-        println!("after decrypt");
         assert_eq!(dec.coeffs(), (&m1 * &m2).coeffs());
+    }
+
+    #[test]
+    fn test_bfv_mul_multiple() {
+        let (bfv, keys, mut rng) = setup_bfv_and_keys();
+        let m1 = bfv.params.rt.sample_uniform(&mut rng);
+        let m2 = bfv.params.rt.sample_uniform(&mut rng);
+        let m3 = bfv.params.rt.sample_uniform(&mut rng);
+        let ct1 = bfv.encrypt(&m1, &keys.public, &mut rng);
+        let ct2 = bfv.encrypt(&m2, &keys.public, &mut rng);
+        let ct3 = bfv.encrypt(&m3, &keys.public, &mut rng);
+        let c_prod = bfv.mul(&ct1, &ct2, &keys.relin);
+        let c_prod = bfv.mul(&c_prod, &ct3, &keys.relin);
+        let dec = bfv.decrypt(&c_prod, &keys.secret);
+        assert_eq!(dec.coeffs(), (&(&m1 * &m2) * &m3).coeffs());
     }
 }
