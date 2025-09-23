@@ -1,4 +1,4 @@
-use crate::poly::dsl::*;
+use crate::poly::centered::*;
 use crate::poly::{Poly, domain::Domain};
 use rand::Rng;
 
@@ -170,17 +170,12 @@ impl BFV {
     pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
         let (t, q, p) = (self.t(), self.q(), self.params.relin_p);
         // Eq. (3): component-wise round(t/q) on ℤ-convolutions, then mod q
-        let c0 = (z!(&ct1.0) * z!(&ct2.0)).round_scale(t, q).mod_q(q);
-        let c1 = (z!(&ct1.0) * z!(&ct2.1) + z!(&ct1.1) * z!(&ct2.0))
-            .round_scale(t, q)
-            .mod_q(q);
+        let c0 = (ct1.0.z() * ct2.0.z()).round_scale(t, q).mod_q(q);
+        let c1 = (ct1.0.z() * ct2.1.z() + ct1.1.z() * ct2.0.z()).round_scale(t, q).mod_q(q);
 
         // FV.SH.Relin (Version 2) on the scaled c2
         let pq = p.checked_mul(q).expect("p*q overflow");
-        let c2 = (z!(&ct1.1) * z!(&ct2.1))
-            .round_scale(t, q)
-            .mod_q(q)
-            .mod_q_centered(pq); // scaled c2 ∈ R_q
+        let c2 = (ct1.1.z() * ct2.1.z()).round_scale(t, q).mod_q(q).mod_q_centered(pq); // scaled c2 ∈ R_q
 
         let r0 = (&c2 * &rlk.0).div_round(p).mod_q(q); // round((c2*rlk[0])/p) mod q
         let r1 = (&c2 * &rlk.1).div_round(p).mod_q(q); // idem for rlk[1]

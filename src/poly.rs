@@ -1,7 +1,7 @@
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+pub mod centered;
 pub mod domain;
-pub mod dsl;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Poly {
@@ -93,24 +93,6 @@ impl Poly {
             })
             .collect();
         Poly { q: new_q, coeffs }
-    }
-
-    /// Non-centered: r_i = round(v_i * num / den) with v_i in [0, q)
-    pub fn scale_round_pos(&self, num: u64, den: u64) -> Poly {
-        assert!(den != 0);
-        let q = self.q as u128;
-        let num128 = num as u128;
-        let den128 = den as u128;
-        let coeffs = self
-            .coeffs
-            .iter()
-            .map(|&v| {
-                let v128 = v as u128;
-                let r = (v128 * num128 + den128 / 2) / den128;
-                (r % q) as u64
-            })
-            .collect();
-        Poly { q: self.q, coeffs }
     }
 
     /// Per-coeff: r = round(v * num / den), with v in [0, q).
@@ -347,7 +329,7 @@ impl Neg for Poly {
     }
 }
 
-// Integer Multiplication (over ℤ[x]/(x^n +1), using u128 for acc to avoid overflow)
+// Integer Multiplication (over ℤ[x]/(x^n +1)
 impl<'a, 'b> Mul<&'b Poly> for &'a Poly {
     type Output = Poly;
     fn mul(self, rhs: &'b Poly) -> Poly {
