@@ -8,5 +8,12 @@ rand = { version = "0.9" }
 rayon = { version = "1.11", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bfv_ops"
+harness = false
+
 [features]
 parallel=["rayon"]

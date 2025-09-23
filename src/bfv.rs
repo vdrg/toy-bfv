@@ -1,3 +1,4 @@
+use crate::poly::dsl::*;
 use crate::poly::{Poly, domain::Domain};
 use rand::Rng;
 
@@ -125,10 +126,10 @@ impl BFV {
         let rlk_e = rlk_domain.sample_cbd(self.params.relin_error_std_dev, rng);
         let rlk_a = rlk_domain.sample_uniform(rng);
 
-        let s2 = (&s * &s).reduce_mod_centered(pq);
-        let spq = s.reduce_mod_centered(pq);
+        let s2 = (&s * &s).mod_q_centered(pq);
+        let spq = s.mod_q_centered(pq);
         // b = -(a*s + e) + p*s^2 (mod p*q)
-        let rlk_b = (-(&rlk_a * &spq + &rlk_e) + p * &s2).reduce_mod(pq);
+        let rlk_b = (-(&rlk_a * &spq + &rlk_e) + p * &s2).mod_q(pq);
 
         Keys {
             secret: s,
@@ -145,7 +146,7 @@ impl BFV {
         let e2 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
 
         // Change m's domain to Rq
-        let m = m.reduce_mod_centered(q);
+        let m = m.mod_q_centered(q);
         let c0 = &pk.0 * &u + e1 + &m * delta;
         let c1 = &pk.1 * &u + e2;
         Ciphertext(c0, c1)
@@ -153,8 +154,7 @@ impl BFV {
 
     pub fn decrypt(&self, ct: &Ciphertext, sk: &SecretKey) -> Poly {
         let v = &ct.0 + &ct.1 * sk;
-        v.scale_round(self.t(), self.q())
-            .reduce_mod_centered(self.t())
+        v.scale_round(self.t(), self.q()).mod_q_centered(self.t())
     }
 
     pub fn bootstrap(&self, ct: &Ciphertext) -> Ciphertext {
@@ -168,43 +168,64 @@ impl BFV {
     /// Ciphertext multiplication with component-wise scale-and-round by t/q
     /// followed by relinearization using the provided relin key.
     pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
-        let q = self.q();
-        let t = self.t();
-        let p = self.params.relin_p;
+        let (t, q, p) = (self.t(), self.q(), self.params.relin_p);
+        // Eq. (3): component-wise round(t/q) on ℤ-convolutions, then mod q
+        let c0 = (z!(&ct1.0) * z!(&ct2.0)).round_scale(t, q).mod_q(q);
+        let c1 = (z!(&ct1.0) * z!(&ct2.1) + z!(&ct1.1) * z!(&ct2.0))
+            .round_scale(t, q)
+            .mod_q(q);
+
+        // FV.SH.Relin (Version 2) on the scaled c2
         let pq = p.checked_mul(q).expect("p*q overflow");
+        let c2 = (z!(&ct1.1) * z!(&ct2.1))
+            .round_scale(t, q)
+            .mod_q(q)
+            .mod_q_centered(pq); // scaled c2 ∈ R_q
 
-        let c0_raw = ct1.0.negacyclic_convolve_centered(&ct2.0);
-        let mut c1_raw = ct1.0.negacyclic_convolve_centered(&ct2.1);
-        let c1_cross = ct1.1.negacyclic_convolve_centered(&ct2.0);
-        for (dst, src) in c1_raw.iter_mut().zip(c1_cross.iter()) {
-            *dst += *src;
-        }
-        let c2_raw = ct1.1.negacyclic_convolve_centered(&ct2.1);
+        let r0 = (&c2 * &rlk.0).div_round(p).mod_q(q); // round((c2*rlk[0])/p) mod q
+        let r1 = (&c2 * &rlk.1).div_round(p).mod_q(q); // idem for rlk[1]
 
-        let mut c0_scaled = Poly::scale_round_raw(&c0_raw, t, q);
-        let mut c1_scaled = Poly::scale_round_raw(&c1_raw, t, q);
-        let c2_scaled = Poly::scale_round_raw(&c2_raw, t, q);
-
-        let c2_q = Poly::from_i128_coeffs(q, &c2_scaled);
-        let c2 = c2_q.reduce_mod_centered(pq);
-
-        let r0 = (&c2 * &rlk.0).div_round(p).reduce_mod(q);
-        let r1 = (&c2 * &rlk.1).div_round(p).reduce_mod(q);
-
-        let r0_center = r0.coeffs_centered_i128();
-        let r1_center = r1.coeffs_centered_i128();
-        for (dst, val) in c0_scaled.iter_mut().zip(r0_center.iter()) {
-            *dst += *val;
-        }
-        for (dst, val) in c1_scaled.iter_mut().zip(r1_center.iter()) {
-            *dst += *val;
-        }
-
-        let c0 = Poly::from_i128_coeffs(q, &c0_scaled);
-        let c1 = Poly::from_i128_coeffs(q, &c1_scaled);
-
-        Ciphertext(c0, c1)
+        Ciphertext(c0 + r0, c1 + r1)
     }
+
+    // pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
+    //     let q = self.q();
+    //     let t = self.t();
+    //     let p = self.params.relin_p;
+    //     let pq = p.checked_mul(q).expect("p*q overflow");
+    //
+    //     let c0_raw = ct1.0.negacyclic_convolve_centered(&ct2.0);
+    //     let mut c1_raw = ct1.0.negacyclic_convolve_centered(&ct2.1);
+    //     let c1_cross = ct1.1.negacyclic_convolve_centered(&ct2.0);
+    //     for (dst, src) in c1_raw.iter_mut().zip(c1_cross.iter()) {
+    //         *dst += *src;
+    //     }
+    //     let c2_raw = ct1.1.negacyclic_convolve_centered(&ct2.1);
+    //
+    //     let mut c0_scaled = Poly::scale_round_raw(&c0_raw, t, q);
+    //     let mut c1_scaled = Poly::scale_round_raw(&c1_raw, t, q);
+    //     let c2_scaled = Poly::scale_round_raw(&c2_raw, t, q);
+    //
+    //     let c2_q = Poly::from_i128_coeffs(q, &c2_scaled);
+    //     let c2 = c2_q.reduce_mod_centered(pq);
+    //
+    //     let r0 = (&c2 * &rlk.0).div_round(p).reduce_mod(q);
+    //     let r1 = (&c2 * &rlk.1).div_round(p).reduce_mod(q);
+    //
+    //     let r0_center = r0.coeffs_centered_i128();
+    //     let r1_center = r1.coeffs_centered_i128();
+    //     for (dst, val) in c0_scaled.iter_mut().zip(r0_center.iter()) {
+    //         *dst += *val;
+    //     }
+    //     for (dst, val) in c1_scaled.iter_mut().zip(r1_center.iter()) {
+    //         *dst += *val;
+    //     }
+    //
+    //     let c0 = Poly::from_i128_coeffs(q, &c0_scaled);
+    //     let c1 = Poly::from_i128_coeffs(q, &c1_scaled);
+    //
+    //     Ciphertext(c0, c1)
+    // }
 }
 
 #[cfg(test)]

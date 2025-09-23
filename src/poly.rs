@@ -1,6 +1,7 @@
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 pub mod domain;
+pub mod dsl;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Poly {
@@ -65,35 +66,32 @@ impl Poly {
         self.q
     }
 
-    pub fn reduce_mod(&self, new_q: u64) -> Poly {
+    pub fn mod_q(&self, new_q: u64) -> Poly {
         assert!(new_q != 0);
         let coeffs = self.coeffs.iter().map(|&c| c % new_q).collect();
         Poly { q: new_q, coeffs }
     }
 
-    pub fn reduce_mod_centered(&self, new_q: u64) -> Poly {
-        assert!(new_q != 0, "new_q cannot be zero");
-
+    pub fn mod_q_centered(&self, new_q: u64) -> Poly {
+        assert!(new_q != 0);
         let old_q = self.q as i128;
-        let new_q_i128 = new_q as i128;
-        let half_old = (old_q - 1) / 2;
-
+        let new_q_i = new_q as i128;
+        let half = (old_q - 1) / 2;
         let coeffs = self
             .coeffs
             .iter()
             .map(|&c| {
                 let mut x = c as i128;
-                if x > half_old {
+                if x > half {
                     x -= old_q;
                 }
-                let mut r = x % new_q_i128;
+                let mut r = x % new_q_i;
                 if r < 0 {
-                    r += new_q_i128;
+                    r += new_q_i;
                 }
                 r as u64
             })
             .collect();
-
         Poly { q: new_q, coeffs }
     }
 
