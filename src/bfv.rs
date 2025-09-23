@@ -1,6 +1,6 @@
-use crate::poly::centered::*;
 use crate::poly::{Poly, domain::Domain};
 use rand::Rng;
+use std::ops::{Index, IndexMut};
 
 /// Holds the cryptographic parameters for a BFV scheme instance.
 /// This struct separates the configuration of the scheme from its implementation.
@@ -49,16 +49,15 @@ impl BfvParameters {
 impl Default for BfvParameters {
     /// Returns a parameter set providing approximately 128 bits of security.
     ///
-    /// These parameters are based on the recommendations from the Homomorphic Encryption
-    /// Standard. They are suitable for evaluating circuits with a small multiplicative depth.
+    /// These parameters are based on the recommendations from the Homomorphic Encryption Sandard
     /// - n = 4096: The polynomial degree.
     /// - q = 1099511922689: A 40-bit prime ciphertext modulus (2^40 + 2^28 + 1).
     /// - t = 65537: A 17-bit prime plaintext modulus, allowing for a large message space.
     /// - relin_p = q^3
-    /// - error_std_dev = 3.2: A standard value for the error distribution.
+    /// - error_std_dev = 3.2: standard deviation for the error distribution.
     fn default() -> Self {
         let q: u64 = 1099511922689;
-        // TODO: is this reasonable?
+        // TODO: this will overflow!
         let p = q.pow(3);
         Self::new(4096, q, 65537, p, 7.0e10, 3.2)
     }
@@ -83,7 +82,73 @@ pub struct Keys {
     pub relin: RelinearizationKey,
 }
 
-pub struct Ciphertext(pub(super) Poly, pub(super) Poly);
+#[derive(Clone, Debug)]
+pub struct Noise {
+    bound: f64,
+}
+
+impl Noise {
+    pub fn zero() -> Self {
+        Self { bound: 0.0 }
+    }
+    pub fn new(bound: f64) -> Self {
+        Self { bound }
+    }
+    #[inline]
+    pub fn bound(&self) -> f64 {
+        self.bound
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Ciphertext {
+    c0: Poly,
+    c1: Poly,
+    noise: Noise,
+}
+
+impl Ciphertext {
+    pub fn new(c0: Poly, c1: Poly) -> Self {
+        Self {
+            c0,
+            c1,
+            noise: Noise::zero(),
+        }
+    }
+    pub fn with_noise(mut self, noise: Noise) -> Self {
+        self.noise = noise;
+        self
+    }
+    #[inline]
+    pub fn parts(&self) -> (&Poly, &Poly) {
+        (&self.c0, &self.c1)
+    }
+    #[inline]
+    pub fn noise(&self) -> &Noise {
+        &self.noise
+    }
+}
+
+impl Index<usize> for Ciphertext {
+    type Output = Poly;
+    fn index(&self, index: usize) -> &Self::Output {
+        match index {
+            0 => &self.c0,
+            1 => &self.c1,
+            _ => panic!("Ciphertext index out of range: {} (expected 0 or 1)", index),
+        }
+    }
+}
+
+impl IndexMut<usize> for Ciphertext {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        match index {
+            0 => &mut self.c0,
+            1 => &mut self.c1,
+            _ => panic!("Ciphertext index out of range: {} (expected 0 or 1)", index),
+        }
+    }
+}
 
 impl BFV {
     pub fn new(params: BfvParameters) -> Self {
@@ -111,6 +176,9 @@ impl BFV {
     }
 
     pub fn keygen<R: Rng>(&self, rng: &mut R) -> Keys {
+        let p = self.params.relin_p;
+        let pq = p * self.q();
+
         let s = self.params.rq.sample_ternary(rng);
         let e = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
         let a = self.params.rq.sample_uniform(rng);
@@ -119,15 +187,13 @@ impl BFV {
         let b = -(&a * &s + &e);
 
         // Relinearization key (V2)
-        let p = self.params.relin_p;
-        let pq = p * self.q();
-
         let rlk_domain = Domain::new(self.n(), pq);
         let rlk_e = rlk_domain.sample_cbd(self.params.relin_error_std_dev, rng);
         let rlk_a = rlk_domain.sample_uniform(rng);
 
         let s2 = (&s * &s).mod_q_centered(pq);
         let spq = s.mod_q_centered(pq);
+
         // b = -(a*s + e) + p*s^2 (mod p*q)
         let rlk_b = (-(&rlk_a * &spq + &rlk_e) + p * &s2).mod_q(pq);
 
@@ -149,78 +215,55 @@ impl BFV {
         let m = m.mod_q_centered(q);
         let c0 = &pk.0 * &u + e1 + &m * delta;
         let c1 = &pk.1 * &u + e2;
-        Ciphertext(c0, c1)
+        // TODO: correctly track noise
+        Ciphertext::new(c0, c1)
     }
 
     pub fn decrypt(&self, ct: &Ciphertext, sk: &SecretKey) -> Poly {
-        let v = &ct.0 + &ct.1 * sk;
-        v.scale_round(self.t(), self.q()).mod_q_centered(self.t())
+        let (t, q) = (self.t(), self.q());
+
+        let v = &ct[0] + &ct[1] * sk;
+
+        v.scale_round(t, q).mod_q_centered(self.t())
     }
 
-    pub fn bootstrap(&self, ct: &Ciphertext) -> Ciphertext {
+    pub fn bootstrap(&self, _: &Ciphertext) -> Ciphertext {
         todo!("not implemented");
     }
 
     pub fn add(&self, ct1: &Ciphertext, ct2: &Ciphertext) -> Ciphertext {
-        Ciphertext(&ct1.0 + &ct2.0, &ct1.1 + &ct2.1)
+        let c0 = &ct1[0] + &ct2[0];
+        let c1 = &ct1[1] + &ct2[1];
+
+        let noise = Noise::new(ct1.noise().bound() + ct2.noise().bound());
+        Ciphertext::new(c0, c1).with_noise(noise)
     }
 
     /// Ciphertext multiplication with component-wise scale-and-round by t/q
     /// followed by relinearization using the provided relin key.
     pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
         let (t, q, p) = (self.t(), self.q(), self.params.relin_p);
+        let pq = p.checked_mul(q).expect("p*q overflow");
+
         // Eq. (3): component-wise round(t/q) on ℤ-convolutions, then mod q
-        let c0 = (ct1.0.z() * ct2.0.z()).round_scale(t, q).mod_q(q);
-        let c1 = (ct1.0.z() * ct2.1.z() + ct1.1.z() * ct2.0.z()).round_scale(t, q).mod_q(q);
+        let c0 = (ct1[0].z() * ct2[0].z()).round_scale(t, q).mod_q(q);
+
+        let c1 = (ct1[0].z() * ct2[1].z() + ct1[1].z() * ct2[0].z())
+            .round_scale(t, q)
+            .mod_q(q);
 
         // FV.SH.Relin (Version 2) on the scaled c2
-        let pq = p.checked_mul(q).expect("p*q overflow");
-        let c2 = (ct1.1.z() * ct2.1.z()).round_scale(t, q).mod_q(q).mod_q_centered(pq); // scaled c2 ∈ R_q
+        let c2 = (ct1[1].z() * ct2[1].z())
+            .round_scale(t, q)
+            .mod_q(q)
+            .mod_q_centered(pq); // scaled c2 in R_q
 
         let r0 = (&c2 * &rlk.0).div_round(p).mod_q(q); // round((c2*rlk[0])/p) mod q
         let r1 = (&c2 * &rlk.1).div_round(p).mod_q(q); // idem for rlk[1]
 
-        Ciphertext(c0 + r0, c1 + r1)
+        // TODO: correctly track noise
+        Ciphertext::new(c0 + r0, c1 + r1)
     }
-
-    // pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
-    //     let q = self.q();
-    //     let t = self.t();
-    //     let p = self.params.relin_p;
-    //     let pq = p.checked_mul(q).expect("p*q overflow");
-    //
-    //     let c0_raw = ct1.0.negacyclic_convolve_centered(&ct2.0);
-    //     let mut c1_raw = ct1.0.negacyclic_convolve_centered(&ct2.1);
-    //     let c1_cross = ct1.1.negacyclic_convolve_centered(&ct2.0);
-    //     for (dst, src) in c1_raw.iter_mut().zip(c1_cross.iter()) {
-    //         *dst += *src;
-    //     }
-    //     let c2_raw = ct1.1.negacyclic_convolve_centered(&ct2.1);
-    //
-    //     let mut c0_scaled = Poly::scale_round_raw(&c0_raw, t, q);
-    //     let mut c1_scaled = Poly::scale_round_raw(&c1_raw, t, q);
-    //     let c2_scaled = Poly::scale_round_raw(&c2_raw, t, q);
-    //
-    //     let c2_q = Poly::from_i128_coeffs(q, &c2_scaled);
-    //     let c2 = c2_q.reduce_mod_centered(pq);
-    //
-    //     let r0 = (&c2 * &rlk.0).div_round(p).reduce_mod(q);
-    //     let r1 = (&c2 * &rlk.1).div_round(p).reduce_mod(q);
-    //
-    //     let r0_center = r0.coeffs_centered_i128();
-    //     let r1_center = r1.coeffs_centered_i128();
-    //     for (dst, val) in c0_scaled.iter_mut().zip(r0_center.iter()) {
-    //         *dst += *val;
-    //     }
-    //     for (dst, val) in c1_scaled.iter_mut().zip(r1_center.iter()) {
-    //         *dst += *val;
-    //     }
-    //
-    //     let c0 = Poly::from_i128_coeffs(q, &c0_scaled);
-    //     let c1 = Poly::from_i128_coeffs(q, &c1_scaled);
-    //
-    //     Ciphertext(c0, c1)
-    // }
 }
 
 #[cfg(test)]
@@ -231,11 +274,11 @@ mod tests {
     use rand::rngs::StdRng;
 
     fn testing_params() -> BfvParameters {
-        // q must be < p. Let's use a large p for testing.
-        let q: u64 = 1_073_741_825; // 2^30 + 1
-        let p: u64 = 2_147_483_647; // 2^31 - 1; pq ≈ 2.3e18 < 2^64
+        // TODO: use parameters that make sense
+        let q: u64 = 1_073_741_825;
+        let p: u64 = 2_147_483_647;
 
-        BfvParameters::new(8, q, 17, p, 0.0, 0.0)
+        BfvParameters::new(16, q, 17, p, 3.2, 100.0)
         // BfvParameters::default()
     }
 

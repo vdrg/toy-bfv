@@ -353,6 +353,28 @@ impl<'a, 'b> Mul<&'b Poly> for &'a Poly {
     }
 }
 
+// Convenience impls to support all owned/borrowed combinations like Add does
+impl<'a> Mul<Poly> for &'a Poly {
+    type Output = Poly;
+    fn mul(self, rhs: Poly) -> Poly {
+        self * &rhs
+    }
+}
+
+impl<'a> Mul<&'a Poly> for Poly {
+    type Output = Poly;
+    fn mul(self, rhs: &'a Poly) -> Poly {
+        &self * rhs
+    }
+}
+
+impl Mul<Poly> for Poly {
+    type Output = Poly;
+    fn mul(self, rhs: Poly) -> Poly {
+        &self * &rhs
+    }
+}
+
 // Scalar Mul
 impl<'a> Mul<u64> for &'a Poly {
     type Output = Poly;

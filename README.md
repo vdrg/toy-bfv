@@ -4,10 +4,9 @@ Minimal implementation of BFV scheme.
 
 ## Goals
 - Readable code that matches the algorithms present in the paper.
-- Obtain insights regarding what's needed to translate FHE scheme paper and implement it.
+- Obtain insights regarding what's needed to translate FHE scheme paper to code.
 
 ## TODO
 - optimize (ntt, etc)
-- missing operations
-- support different coefficient types?
+- Correct noise tracking
 - bootstraping?
