@@ -173,7 +173,7 @@ impl BFV {
 #[cfg(test)]
 mod tests {
     use super::{BFV, BfvParameters, Keys};
-    use crate::poly::RingPoly;
+    use crate::poly::{Poly, RingPoly};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 

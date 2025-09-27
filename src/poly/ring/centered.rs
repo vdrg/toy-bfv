@@ -1,11 +1,11 @@
-use super::RingPoly;
+use super::{Poly, RingPoly};
 
 #[derive(Copy, Clone)]
 pub struct ZView<'a>(pub &'a RingPoly);
 
 #[derive(Clone, Debug)]
 pub struct ZExpr {
-    pub(crate) coeffs: Vec<i128>,
+    coeffs: Vec<i128>,
 }
 
 impl RingPoly {

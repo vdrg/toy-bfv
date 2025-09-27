@@ -1,4 +1,4 @@
-use super::{RingPoly, xk};
+use super::{Poly, RingPoly, xk};
 
 pub struct RotView<'a> {
     p: &'a RingPoly,
