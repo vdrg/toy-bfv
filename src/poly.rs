@@ -6,7 +6,7 @@ pub mod scalar;
 pub use self::ring::*;
 pub use self::scalar::*;
 
-pub trait PolyLike {
+pub trait Poly {
     type CoeffType: Copy + PartialEq + From<u8>;
 
     fn len(&self) -> usize;

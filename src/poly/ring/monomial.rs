@@ -1,5 +1,5 @@
 use super::RingPoly;
-use crate::poly::PolyLike;
+use crate::poly::Poly;
 use std::borrow::Cow;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -13,7 +13,7 @@ pub fn xk(n: usize, k: usize) -> Monomial {
     Monomial { n, k }
 }
 
-impl PolyLike for Monomial {
+impl Poly for Monomial {
     type CoeffType = u64;
     fn len(&self) -> usize {
         self.n

@@ -1,4 +1,4 @@
-use super::PolyLike;
+use super::Poly;
 use std::borrow::Cow;
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -15,7 +15,7 @@ pub struct RingPoly {
     coeffs: Vec<u64>,
 }
 
-impl PolyLike for RingPoly {
+impl Poly for RingPoly {
     type CoeffType = u64;
     fn len(&self) -> usize {
         self.coeffs.len()
@@ -68,28 +68,6 @@ impl RingPoly {
             .map(|&v| ((v % modulus + modulus) % modulus) as u64)
             .collect();
         Self { q, coeffs: mapped }
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.coeffs.len()
-    }
-
-    #[inline]
-    pub fn coeffs(&self) -> &[u64] {
-        &self.coeffs
-    }
-
-    #[inline]
-    pub fn coeff(&self, i: usize) -> u64 {
-        debug_assert!(i < self.len());
-        self.coeffs[i]
-    }
-
-    // TODO: move these into a trait shared by poly and RotView
-    #[inline]
-    pub fn const_term(&self) -> u64 {
-        self.coeff(0)
     }
 
     #[inline]

@@ -1,6 +1,6 @@
 use crate::poly::{EvalAt, RingPoly};
 
-use super::PolyLike;
+use super::Poly;
 use std::borrow::Cow;
 
 /// Univariate polynomial P(y) with possibly signed coefficients.
@@ -9,7 +9,7 @@ pub struct ScalarPoly<T = u64> {
     pub coeffs: Vec<T>,
 }
 
-impl<T: Copy + PartialEq + From<u8>> PolyLike for ScalarPoly<T> {
+impl<T: Copy + PartialEq + From<u8>> Poly for ScalarPoly<T> {
     type CoeffType = T;
     fn len(&self) -> usize {
         self.coeffs.len()
