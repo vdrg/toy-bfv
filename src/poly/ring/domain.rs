@@ -1,4 +1,4 @@
-use super::Poly;
+use super::RingPoly;
 use rand::Rng;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,7 +10,6 @@ pub struct Domain {
 impl Domain {
     pub fn new(n: usize, q: u64) -> Self {
         assert!(n.is_power_of_two(), "n must be a power of two");
-        assert!(q % 2 == 1, "q must be odd");
         Self { n, q }
     }
 
@@ -24,28 +23,38 @@ impl Domain {
     }
 
     /// Uniform sample in Z_q
-    pub fn sample_uniform<R: Rng + ?Sized>(&self, rng: &mut R) -> Poly {
+    pub fn sample_uniform<R: Rng + ?Sized>(&self, rng: &mut R) -> RingPoly {
         let q = self.q;
         let mut coeffs = vec![0u64; self.n];
         for c in &mut coeffs {
             *c = rng.random_range(0..q); // [0, q)
         }
-        Poly::from_coeffs(q, coeffs)
+        RingPoly::from_coeffs(q, coeffs)
     }
 
     /// Ternary in {-1,0,1} mod q
-    pub fn sample_ternary<R: Rng + ?Sized>(&self, rng: &mut R) -> Poly {
+    pub fn sample_ternary<R: Rng + ?Sized>(&self, rng: &mut R) -> RingPoly {
         let q = self.q;
         let mut coeffs = vec![0u64; self.n];
         for c in &mut coeffs {
             let r = rng.random_range(0..3);
             *c = if r == 2 { q - 1 } else { r }
         }
-        Poly::from_coeffs(q, coeffs)
+        RingPoly::from_coeffs(q, coeffs)
+    }
+
+    pub fn sample_binary<R: Rng + ?Sized>(&self, rng: &mut R) -> RingPoly {
+        let q = self.q;
+        let mut coeffs = vec![0u64; self.n];
+        for c in &mut coeffs {
+            let r = rng.random_range(0..2);
+            *c = r;
+        }
+        RingPoly::from_coeffs(q, coeffs)
     }
 
     /// CBD noise (approximates a discrete gaussian)
-    pub fn sample_cbd<R: Rng + ?Sized>(&self, std_dev: f64, rng: &mut R) -> Poly {
+    pub fn sample_cbd<R: Rng + ?Sized>(&self, std_dev: f64, rng: &mut R) -> RingPoly {
         let q = self.q;
         // CBD(k) has Var=k/2 => k = 2*std_dev^2 (rounded).
         let k = (2.0 * std_dev * std_dev).round().max(0.0) as usize;
@@ -65,6 +74,6 @@ impl Domain {
             }
             *c = a_sum + (q - b_sum % q); // already centered
         }
-        Poly::from_coeffs(q, v)
+        RingPoly::from_coeffs(q, v)
     }
 }

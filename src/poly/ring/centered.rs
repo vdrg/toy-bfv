@@ -1,14 +1,14 @@
-use super::Poly;
+use super::RingPoly;
 
 #[derive(Copy, Clone)]
-pub struct ZView<'a>(pub &'a Poly);
+pub struct ZView<'a>(pub &'a RingPoly);
 
 #[derive(Clone, Debug)]
 pub struct ZExpr {
     pub(crate) coeffs: Vec<i128>,
 }
 
-impl Poly {
+impl RingPoly {
     #[inline]
     pub fn z(&self) -> ZView<'_> {
         ZView(self)
@@ -50,11 +50,11 @@ impl std::ops::Neg for ZExpr {
 impl ZExpr {
     #[inline]
     pub fn round_scale(mut self, num: u64, den: u64) -> ZExpr {
-        self.coeffs = Poly::scale_round_raw(&self.coeffs, num, den);
+        self.coeffs = RingPoly::scale_round_raw(&self.coeffs, num, den);
         self
     }
     #[inline]
-    pub fn mod_q(self, q: u64) -> Poly {
-        Poly::from_i128_coeffs(q, &self.coeffs)
+    pub fn mod_q(self, q: u64) -> RingPoly {
+        RingPoly::from_i128_coeffs(q, &self.coeffs)
     }
 }
