@@ -1,68 +1,15 @@
-use crate::poly::{Poly, domain::Domain};
+use crate::{
+    ciphertext::{Noise, RLWECiphertext},
+    poly::{RingPoly, domain::Domain},
+};
 use rand::Rng;
-use std::ops::{Index, IndexMut};
 
-/// Holds the cryptographic parameters for a BFV scheme instance.
-/// This struct separates the configuration of the scheme from its implementation.
-pub struct BfvParameters {
-    /// R_q, the ciphertext polynomial ring.
-    pub rq: Domain,
-    /// R_t, the plaintext polynomial ring.
-    pub rt: Domain,
-    /// The scaling factor `p` for Version 2 relinearization.
-    pub relin_p: u64,
-    pub relin_error_std_dev: f64,
-    /// The standard deviation for the error distribution.
-    pub error_std_dev: f64,
-}
+// pub mod bootstrap;
+pub mod params;
 
-impl BfvParameters {
-    /// Creates a new set of BFV parameters.
-    pub fn new(
-        n: usize,
-        q: u64,
-        t: u64,
-        relin_p: u64,
-        relin_error_std_dev: f64,
-        error_std_dev: f64,
-    ) -> Self {
-        // TODO: q | p?
-        assert!(
-            relin_p > 0,
-            "Relinearization scaling factor p must be positive."
-        );
-        assert!(
-            t > 0 && t < q,
-            "Plaintext modulus t must satisfy 0 < t < q."
-        );
-        Self {
-            rq: Domain::new(n, q),
-            rt: Domain::new(n, t),
-            relin_p,
-            relin_error_std_dev,
-            error_std_dev,
-        }
-    }
-}
+pub use params::*;
 
-/// Provides a default, 128-bit secure parameter set for the BFV scheme.
-impl Default for BfvParameters {
-    /// Returns a parameter set providing approximately 128 bits of security.
-    ///
-    /// These parameters are based on the recommendations from the Homomorphic Encryption Sandard
-    /// - n = 4096: The polynomial degree.
-    /// - q = 1099511922689: A 40-bit prime ciphertext modulus (2^40 + 2^28 + 1).
-    /// - t = 65537: A 17-bit prime plaintext modulus, allowing for a large message space.
-    /// - relin_p = q^3
-    /// - error_std_dev = 3.2: standard deviation for the error distribution.
-    fn default() -> Self {
-        let q: u64 = 1099511922689;
-        // TODO: this will overflow!
-        let p = q.pow(3);
-        Self::new(4096, q, 65537, p, 7.0e10, 3.2)
-    }
-}
-
+#[derive(Clone, Debug)]
 pub struct BFV {
     /// The parameters for this BFV instance. Made public to allow access
     /// to the underlying domains for message creation.
@@ -70,84 +17,16 @@ pub struct BFV {
     delta: u64,
 }
 
-type SecretKey = Poly;
-type PublicKey = (Poly, Poly); // (b, a)
+type SecretKey = RingPoly;
+type PublicKey = (RingPoly, RingPoly); // (b, a)
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RelinearizationKey(Poly, Poly);
+pub struct RelinearizationKey(RingPoly, RingPoly);
 
 pub struct Keys {
     pub secret: SecretKey,
     pub public: PublicKey,
     pub relin: RelinearizationKey,
-}
-
-#[derive(Clone, Debug)]
-pub struct Noise {
-    bound: f64,
-}
-
-impl Noise {
-    pub fn zero() -> Self {
-        Self { bound: 0.0 }
-    }
-    pub fn new(bound: f64) -> Self {
-        Self { bound }
-    }
-    #[inline]
-    pub fn bound(&self) -> f64 {
-        self.bound
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Ciphertext {
-    c0: Poly,
-    c1: Poly,
-    noise: Noise,
-}
-
-impl Ciphertext {
-    pub fn new(c0: Poly, c1: Poly) -> Self {
-        Self {
-            c0,
-            c1,
-            noise: Noise::zero(),
-        }
-    }
-    pub fn with_noise(mut self, noise: Noise) -> Self {
-        self.noise = noise;
-        self
-    }
-    #[inline]
-    pub fn parts(&self) -> (&Poly, &Poly) {
-        (&self.c0, &self.c1)
-    }
-    #[inline]
-    pub fn noise(&self) -> &Noise {
-        &self.noise
-    }
-}
-
-impl Index<usize> for Ciphertext {
-    type Output = Poly;
-    fn index(&self, index: usize) -> &Self::Output {
-        match index {
-            0 => &self.c0,
-            1 => &self.c1,
-            _ => panic!("Ciphertext index out of range: {} (expected 0 or 1)", index),
-        }
-    }
-}
-
-impl IndexMut<usize> for Ciphertext {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        match index {
-            0 => &mut self.c0,
-            1 => &mut self.c1,
-            _ => panic!("Ciphertext index out of range: {} (expected 0 or 1)", index),
-        }
-    }
 }
 
 impl BFV {
@@ -157,6 +36,13 @@ impl BFV {
             delta: q / params.rt.q(),
             params,
         }
+    }
+
+    pub fn with_modulus(&self, q: u64, t: u64) -> Self {
+        let mut p = self.params.clone();
+        p.rq = Domain::new(self.n(), q);
+        p.rt = Domain::new(self.n(), t);
+        BFV::new(p)
     }
 
     #[inline]
@@ -179,12 +65,14 @@ impl BFV {
         let p = self.params.relin_p;
         let pq = p * self.q();
 
-        let s = self.params.rq.sample_ternary(rng);
+        let s = self.params.rq.sample_binary(rng);
         let e = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
         let a = self.params.rq.sample_uniform(rng);
 
         // RLWE
         let b = -(&a * &s + &e);
+
+        let pk = (b, a);
 
         // Relinearization key (V2)
         let rlk_domain = Domain::new(self.n(), pq);
@@ -195,31 +83,33 @@ impl BFV {
         let spq = s.mod_q_centered(pq);
 
         // b = -(a*s + e) + p*s^2 (mod p*q)
-        let rlk_b = (-(&rlk_a * &spq + &rlk_e) + p * &s2).mod_q(pq);
+        let rlk_b = -(&rlk_a * &spq + &rlk_e) + p * &s2;
 
         Keys {
             secret: s,
-            public: (b, a),
+            public: pk,
             relin: RelinearizationKey(rlk_b, rlk_a),
         }
     }
 
-    pub fn encrypt<R: Rng>(&self, m: &Poly, pk: &PublicKey, rng: &mut R) -> Ciphertext {
+    pub fn encrypt<R: Rng>(&self, m: &RingPoly, pk: &PublicKey, rng: &mut R) -> RLWECiphertext {
         let q = self.q();
         let delta = self.delta;
-        let u = self.params.rq.sample_ternary(rng);
+        let u = self.params.rq.sample_binary(rng);
         let e1 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
         let e2 = self.params.rq.sample_cbd(self.params.error_std_dev, rng);
 
         // Change m's domain to Rq
         let m = m.mod_q_centered(q);
+
         let c0 = &pk.0 * &u + e1 + &m * delta;
         let c1 = &pk.1 * &u + e2;
+
         // TODO: correctly track noise
-        Ciphertext::new(c0, c1)
+        RLWECiphertext::new(c0, c1)
     }
 
-    pub fn decrypt(&self, ct: &Ciphertext, sk: &SecretKey) -> Poly {
+    pub fn decrypt(&self, ct: &RLWECiphertext, sk: &SecretKey) -> RingPoly {
         let (t, q) = (self.t(), self.q());
 
         let v = &ct[0] + &ct[1] * sk;
@@ -227,21 +117,21 @@ impl BFV {
         v.scale_round(t, q).mod_q_centered(self.t())
     }
 
-    pub fn bootstrap(&self, _: &Ciphertext) -> Ciphertext {
-        todo!("not implemented");
-    }
-
-    pub fn add(&self, ct1: &Ciphertext, ct2: &Ciphertext) -> Ciphertext {
+    pub fn add(&self, ct1: &RLWECiphertext, ct2: &RLWECiphertext) -> RLWECiphertext {
         let c0 = &ct1[0] + &ct2[0];
         let c1 = &ct1[1] + &ct2[1];
 
-        let noise = Noise::new(ct1.noise().bound() + ct2.noise().bound());
-        Ciphertext::new(c0, c1).with_noise(noise)
+        RLWECiphertext::new(c0, c1).with_noise(self.noise_after_add(&ct1.noise(), &ct2.noise()))
     }
 
-    /// Ciphertext multiplication with component-wise scale-and-round by t/q
+    /// RLWECiphertext multiplication with component-wise scale-and-round by t/q
     /// followed by relinearization using the provided relin key.
-    pub fn mul(&self, ct1: &Ciphertext, ct2: &Ciphertext, rlk: &RelinearizationKey) -> Ciphertext {
+    pub fn mul(
+        &self,
+        ct1: &RLWECiphertext,
+        ct2: &RLWECiphertext,
+        rlk: &RelinearizationKey,
+    ) -> RLWECiphertext {
         let (t, q, p) = (self.t(), self.q(), self.params.relin_p);
         let pq = p.checked_mul(q).expect("p*q overflow");
 
@@ -261,15 +151,29 @@ impl BFV {
         let r0 = (&c2 * &rlk.0).div_round(p).mod_q(q); // round((c2*rlk[0])/p) mod q
         let r1 = (&c2 * &rlk.1).div_round(p).mod_q(q); // idem for rlk[1]
 
-        // TODO: correctly track noise
-        Ciphertext::new(c0 + r0, c1 + r1)
+        RLWECiphertext::new(c0 + r0, c1 + r1)
+            .with_noise(self.noise_after_mul(&ct1.noise(), &ct2.noise()))
+    }
+
+    #[inline]
+    fn noise_after_add(&self, a: &Noise, b: &Noise) -> Noise {
+        Noise::new(a.bound() + b.bound())
+    }
+
+    /// Mul (BFV basic mul + component t/q scaling):
+    /// (t/q)·(‖e1‖ + ‖e2‖) + relinearization error
+    #[inline]
+    fn noise_after_mul(&self, a: &Noise, b: &Noise) -> Noise {
+        let scale = self.t() as f64 / self.q() as f64;
+        let relin = self.params.relin_error_std_dev; // very crude
+        Noise::new(scale * (a.bound() + b.bound()) + relin)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{BFV, BfvParameters, Keys};
-    use crate::poly::Poly;
+    use crate::poly::RingPoly;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -293,7 +197,7 @@ mod tests {
     #[test]
     fn test_bfv_zero_polynomial() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
-        let m_zero = Poly::zero(bfv.q(), bfv.n());
+        let m_zero = RingPoly::zero(bfv.q(), bfv.n());
         let ct = bfv.encrypt(&m_zero, &keys.public, &mut rng);
         let decrypted = bfv.decrypt(&ct, &keys.secret);
         assert_eq!(decrypted.coeffs(), m_zero.coeffs());
@@ -303,7 +207,7 @@ mod tests {
     fn test_bfv_constant_polynomial() {
         let (bfv, keys, mut rng) = setup_bfv_and_keys();
         let n = bfv.n();
-        let m_const = Poly::from_coeffs(bfv.q(), vec![5u64; n]);
+        let m_const = RingPoly::from_coeffs(bfv.q(), vec![5u64; n]);
         let ct = bfv.encrypt(&m_const, &keys.public, &mut rng);
         let decrypted = bfv.decrypt(&ct, &keys.secret);
         assert_eq!(decrypted.coeffs(), m_const.coeffs());
@@ -325,7 +229,7 @@ mod tests {
         let n = bfv.n();
         let mut coeffs = vec![0u64; n];
         coeffs[0] = 10;
-        let m_single = Poly::from_coeffs(t, coeffs);
+        let m_single = RingPoly::from_coeffs(t, coeffs);
         let ct = bfv.encrypt(&m_single, &keys.public, &mut rng);
         let decrypted = bfv.decrypt(&ct, &keys.secret);
         assert_eq!(decrypted.coeffs(), m_single.coeffs());
