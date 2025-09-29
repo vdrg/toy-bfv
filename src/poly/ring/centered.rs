@@ -49,7 +49,7 @@ impl std::ops::Neg for ZExpr {
 
 impl ZExpr {
     #[inline]
-    pub fn round_scale(mut self, num: u64, den: u64) -> ZExpr {
+    pub fn scale_round(mut self, num: u64, den: u64) -> ZExpr {
         self.coeffs = RingPoly::scale_round_raw(&self.coeffs, num, den);
         self
     }

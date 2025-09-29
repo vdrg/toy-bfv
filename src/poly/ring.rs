@@ -263,7 +263,7 @@ impl<'a, 'b> Add<&'b RingPoly> for &'a RingPoly {
             .coeffs
             .iter()
             .zip(rhs.coeffs.iter())
-            .map(|(&a, &b)| (a.wrapping_add(b)) % q)
+            .map(|(&a, &b)| (a + b) % q)
             .collect();
         RingPoly { coeffs, q }
     }
@@ -298,7 +298,7 @@ impl AddAssign<&RingPoly> for RingPoly {
         let q = self.q;
 
         for (a, &b) in self.coeffs.iter_mut().zip(rhs.coeffs.iter()) {
-            *a = (a.wrapping_add(b)) % q;
+            *a = (*a + b) % q;
         }
     }
 }

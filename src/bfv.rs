@@ -136,15 +136,15 @@ impl BFV {
         let pq = p.checked_mul(q).expect("p*q overflow");
 
         // Eq. (3): component-wise round(t/q) on ℤ-convolutions, then mod q
-        let c0 = (ct1[0].z() * ct2[0].z()).round_scale(t, q).mod_q(q);
+        let c0 = (ct1[0].z() * ct2[0].z()).scale_round(t, q).mod_q(q);
 
         let c1 = (ct1[0].z() * ct2[1].z() + ct1[1].z() * ct2[0].z())
-            .round_scale(t, q)
+            .scale_round(t, q)
             .mod_q(q);
 
         // FV.SH.Relin (Version 2) on the scaled c2
         let c2 = (ct1[1].z() * ct2[1].z())
-            .round_scale(t, q)
+            .scale_round(t, q)
             .mod_q(q)
             .mod_q_centered(pq); // scaled c2 in R_q
 
